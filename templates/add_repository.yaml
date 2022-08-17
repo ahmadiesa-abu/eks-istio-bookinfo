@@ -1,0 +1,14 @@
+rest_calls:
+  - path: /api/v1/repositories
+    method: POST
+    headers:
+      Content-type: application/json
+      Authorization: "Bearer {{ TOKEN }}"
+    payload:
+      name: "{{ REPO_NAME }}"
+      repo: "{{ REPO }}"
+    response_format: json
+    recoverable_codes: [400]
+    retry_on_connection_error: true
+    response_translation:
+        repo: [repo]

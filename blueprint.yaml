@@ -1,0 +1,135 @@
+tosca_definitions_version: cloudify_dsl_1_3
+
+description: Deploys an EKS cluster with ArgoCD and NGINX deployed via ArgoCD using service composition.
+
+imports:
+  - https://cloudify.co/spec/cloudify/6.3.0/types.yaml
+  - plugin:cloudify-helm-plugin
+  - plugin:cloudify-kubernetes-plugin
+  - plugin:cloudify-utilities-plugin
+
+inputs:
+
+  aws_region_name:
+      type: string
+      display_label: Region
+      default: 'us-east-1'
+      constraints:
+        - valid_values:
+            - us-east-1
+            - us-east-2
+            - us-west-1
+            - us-west-2
+            - eu-central-1
+            - eu-west-1
+            - eu-west-2
+            - eu-south-1
+            - eu-west-3
+            - eu-north-1
+            - af-south-1
+            - ap-east-1
+            - ap-south-1
+            - ap-northeast-3
+            - ap-northeast-2
+            - ap-southeast-1
+            - ap-southeast-2
+            - ap-northeast-1
+            - ca-central-1
+            - cn-north-1
+            - cn-northwest-1
+            - me-south-1
+            - sa-east-1
+  
+  aws_az_1:
+    type: string
+    display_label: Availability Zone 1
+    default: { concat: [ { get_input: aws_region_name }, 'a' ] }
+
+  aws_az_2:
+    type: string
+    display_label: Availability Zone 2
+    default: { concat: [ { get_input: aws_region_name }, 'c' ] }
+
+  eks_cluster_name:
+    type: string
+    display_label: EKS Cluster Name
+    default: cloudify-demo
+
+node_templates:
+
+  eks_cluster:
+    type: cloudify.nodes.Component
+    properties:
+      resource_config:
+        blueprint:
+          id: { concat: [ { get_input: eks_cluster_name }, "-cluster" ] }
+          blueprint_archive: https://github.com/cloudify-community/blueprint-examples/releases/download/latest/kubernetes-aws-eks.zip
+          main_file_name: 'blueprint.yaml'
+        deployment:
+          id: { concat: [ { get_input: eks_cluster_name }, "-cluster" ] }
+          inputs:
+            eks_cluster_name: { get_input: eks_cluster_name }
+            aws_region_name: { get_input: aws_region_name }
+            availability_zone_1: { concat: [ { get_input: aws_region_name }, 'a' ] }
+            availability_zone_2: { concat: [ { get_input: aws_region_name }, 'b' ] }
+    interfaces:
+      cloudify.interfaces.lifecycle:
+        start:
+          implementation: cfy_extensions.cloudify_types.component.execute_start
+          inputs:
+            timeout: 3600
+
+  argocd:
+    type: cloudify.nodes.Component
+    properties:
+      resource_config:
+        blueprint:
+          id: { concat: [ { get_input: eks_cluster_name }, "-argocd" ] }
+          blueprint_archive: https://github.com/cloudify-community/eks-argocd-nginx/archive/refs/heads/master.zip
+          main_file_name: argocd.yaml
+        deployment:
+          id: { concat: [ { get_input: eks_cluster_name }, "-argocd" ] }
+          inputs:
+            kubeconfig: { get_attribute: [ eks_cluster, capabilities, connection_details, file_content ] }
+            kubernetes_endpoint: { get_attribute: [ eks_cluster, capabilities, endpoint ] }
+    relationships:
+      - target: eks_cluster
+        type: cloudify.relationships.contained_in
+
+  nginx:
+    type: cloudify.nodes.Component
+    properties:
+      resource_config:
+        blueprint:
+          id: { concat: [ { get_input: eks_cluster_name }, "-nginx" ] }
+          blueprint_archive: https://github.com/cloudify-community/eks-argocd-nginx/archive/refs/heads/master.zip
+          main_file_name: nginx_argocd.yaml
+        deployment:
+          id: { concat: [ { get_input: eks_cluster_name }, "-nginx" ] }
+          inputs:
+            argocd_endpoint: { get_attribute: [ argocd, capabilities, argocd_endpoint ] }
+            argocd_password: { get_attribute: [ argocd, capabilities, argocd_password ] }
+            kubernetes_endpoint: { get_attribute: [ eks_cluster, capabilities, endpoint ] }
+    relationships:
+      - target: eks_cluster
+        type: cloudify.relationships.contained_in
+      - target: argocd
+        type: cloudify.relationships.depends_on
+
+outputs:
+
+  argocd_url:
+    description: URL used for accessing ArgoCD installation
+    value: { concat: [ "https://", { get_attribute: [ argocd, capabilities, argocd_endpoint ] } ] }
+  argocd_user:
+    description: Username for accessing ArgoCD
+    value: { get_attribute: [ argocd, capabilities, argocd_user ] }
+  agrocd_passsword:
+    description: Password for accessing ArgoCD
+    value: { get_attribute: [ argocd, capabilities, argocd_password ] }
+  nginx_url:
+    description: Load balancer endpoint for NGINX deployment
+    value: { get_attribute: [ nginx, capabilities, nginx_url ] }
+  argocd_application_url:
+    description: URL of application in ArgoCD
+    value: { get_attribute: [ nginx, capabilities, argocd_application_url ] }
