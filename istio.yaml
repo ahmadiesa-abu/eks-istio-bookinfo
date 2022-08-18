@@ -1,0 +1,178 @@
+tosca_definitions_version: cloudify_dsl_1_3
+
+description: Installs Istio on Kubernetes via Helm
+
+imports:
+  - https://cloudify.co/spec/cloudify/6.3.0/types.yaml
+  - plugin:cloudify-helm-plugin
+  - plugin:cloudify-utilities-plugin
+  - plugin:cloudify-kubernetes-plugin
+
+inputs:
+
+  kubeconfig:
+    description: Kubernetes configuration file used by Helm
+    display_label: Kubeconfig
+    type: string
+
+  kubernetes_endpoint:
+    description: Kubernetes API endpoint
+    display_label: Kubernetes Endpoint
+    type: string
+
+  kubernetes_token:
+    description: Kubernetes service account token used by Helm
+    display_label: Kubernetes SA Token
+    type: string
+    default: { get_secret: kubernetes_token }
+
+  helm_installation_source:
+    description: Helm download link.
+    display_label: Helm Installation Source
+    type: string
+    default: 'https://get.helm.sh/helm-v3.9.3-linux-amd64.tar.gz'
+
+  istio_namespace:
+    description: Istio namespace.
+    display_label: Istio Namespace
+    type: string
+    default: 'istio-system'
+
+  istio_ingress_namespace:
+    description: Istio ingress namespace.
+    display_label: Istio ingress Namespace
+    type: string
+    default: 'istio-ingress'
+
+node_templates:
+
+  istio_system_namespace:
+    type: cloudify.nodes.kubernetes.resources.Namespace
+    properties:
+      client_config:
+        configuration: &kubernetes_master_configuration
+          api_options:
+            host: { get_input: kubernetes_endpoint }
+            api_key: { get_input: kubernetes_token }
+            verify_ssl: false
+      definition:
+        apiVersion: v1
+        kind: Namespace
+        metadata:
+          name: { get_input: istio_namespace }
+          labels:
+            istio-injection: disabled
+
+  istio_ingress_namespace:
+    type: cloudify.kubernetes.resources.Service
+    properties:
+      client_config:
+        configuration: *kubernetes_master_configuration
+      definition:
+        apiVersion: v1
+        kind: Namespace
+        metadata:
+          name: { get_input: istio_ingress_namespace }
+          labels:
+            istio-injection: enabled
+
+  helm_install:
+    type: cloudify.nodes.helm.Binary
+    properties:
+      use_existing_resource: false
+      installation_source: { get_input: helm_installation_source }
+
+  repo:
+    type: cloudify.nodes.helm.Repo
+    properties:
+      resource_config:
+        name: istio
+        repo_url: https://istio-release.storage.googleapis.com/charts
+    relationships:
+      - target: helm_install
+        type: cloudify.helm.relationships.run_on_host
+
+  istio_release:
+    type: cloudify.nodes.helm.Release
+    properties:
+      client_config:
+        configuration:
+          file_content: { get_input: kubeconfig }
+          api_options:
+            api_key: { get_input: kubernetes_token }
+      resource_config:
+        name: istio-base
+        chart: istio/base
+        flags:
+          - name: namespace
+            value: { get_input: istio_namespace }
+    relationships:
+      - target: helm_install
+        type: cloudify.helm.relationships.run_on_host
+      - target: repo
+        type: cloudify.relationships.depends_on
+      - target: istio_system_namespace
+        type: cloudify.relationships.depends_on
+
+  istio_discovery:
+    type: cloudify.nodes.helm.Release
+    properties:
+      client_config:
+        configuration:
+          file_content: { get_input: kubeconfig }
+          api_options:
+            api_key: { get_input: kubernetes_token }
+      resource_config:
+        name: istiod
+        chart: istio/istiod
+        flags:
+          - name: namespace
+            value: { get_input: istio_namespace }
+    relationships:
+      - target: helm_install
+        type: cloudify.helm.relationships.run_on_host
+      - target: istio_release
+        type: cloudify.relationships.depends_on
+
+  istio_ingress_gateway:
+    type: cloudify.nodes.helm.Release
+    properties:
+      client_config:
+        configuration:
+          file_content: { get_input: kubeconfig }
+          api_options:
+            api_key: { get_input: kubernetes_token }
+      resource_config:
+        name: istio-ingressgateway
+        chart: istio/gateway
+        flags:
+          - name: namespace
+            value: { get_input: istio_ingress_namespace }
+    relationships:
+      - target: helm_install
+        type: cloudify.helm.relationships.run_on_host
+      - target: istio_discovery
+        type: cloudify.relationships.depends_on
+      - target: istio_ingress_namespace
+        type: cloudify.relationships.depends_on
+
+  istio_ingress_service_endpoint:
+    type: cloudify.kubernetes.resources.Service
+    properties:
+      client_config:
+        configuration: *kubernetes_master_configuration
+      use_external_resource: true
+      definition:
+        apiVersion: v1
+        kind: Service
+        metadata:
+          name: istio-ingressgateway
+          namespace: { get_input: istio_ingress_namespace }
+    relationships:
+      - target: istio_ingress_gateway
+        type: cloudify.relationships.depends_on
+
+capabilities:
+  istio_ingress_endpoint:
+    description: Endpoint used for accessing Istio ingress gateway
+    value: { get_attribute: [ istio_ingress_service_endpoint, kubernetes, status, load_balancer, ingress, 0, hostname ] }

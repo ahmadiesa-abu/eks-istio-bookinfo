@@ -1,6 +1,6 @@
 tosca_definitions_version: cloudify_dsl_1_3
 
-description: Deploys an EKS cluster with ArgoCD and NGINX deployed via ArgoCD using service composition.
+description: Deploys an EKS cluster with Istio and Bookinfo using service composition.
 
 imports:
   - https://cloudify.co/spec/cloudify/6.3.0/types.yaml
@@ -39,7 +39,7 @@ inputs:
             - cn-northwest-1
             - me-south-1
             - sa-east-1
-  
+
   aws_az_1:
     type: string
     display_label: Availability Zone 1
@@ -70,8 +70,8 @@ node_templates:
           inputs:
             eks_cluster_name: { get_input: eks_cluster_name }
             aws_region_name: { get_input: aws_region_name }
-            availability_zone_1: { concat: [ { get_input: aws_region_name }, 'a' ] }
-            availability_zone_2: { concat: [ { get_input: aws_region_name }, 'b' ] }
+            availability_zone_1: { get_input: aws_az_1 }
+            availability_zone_2: { get_input: aws_az_2 }
     interfaces:
       cloudify.interfaces.lifecycle:
         start:
@@ -79,16 +79,16 @@ node_templates:
           inputs:
             timeout: 3600
 
-  argocd:
+  istio:
     type: cloudify.nodes.Component
     properties:
       resource_config:
         blueprint:
-          id: { concat: [ { get_input: eks_cluster_name }, "-argocd" ] }
-          blueprint_archive: https://github.com/cloudify-community/eks-argocd-nginx/archive/refs/heads/master.zip
-          main_file_name: argocd.yaml
+          id: { concat: [ { get_input: eks_cluster_name }, "-istio" ] }
+          blueprint_archive: https://github.com/ahmadiesa-abu/eks-istio-bookinfo/archive/refs/heads/master.zip
+          main_file_name: istio.yaml
         deployment:
-          id: { concat: [ { get_input: eks_cluster_name }, "-argocd" ] }
+          id: { concat: [ { get_input: eks_cluster_name }, "-istio" ] }
           inputs:
             kubeconfig: { get_attribute: [ eks_cluster, capabilities, connection_details, file_content ] }
             kubernetes_endpoint: { get_attribute: [ eks_cluster, capabilities, endpoint ] }
@@ -96,40 +96,30 @@ node_templates:
       - target: eks_cluster
         type: cloudify.relationships.contained_in
 
-  nginx:
+  bookinfo:
     type: cloudify.nodes.Component
     properties:
       resource_config:
         blueprint:
-          id: { concat: [ { get_input: eks_cluster_name }, "-nginx" ] }
-          blueprint_archive: https://github.com/cloudify-community/eks-argocd-nginx/archive/refs/heads/master.zip
-          main_file_name: nginx_argocd.yaml
+          id: { concat: [ { get_input: eks_cluster_name }, "-bookinfo" ] }
+          blueprint_archive: https://github.com/ahmadiesa-abu/eks-istio-bookinfo/archive/refs/heads/master.zip
+          main_file_name: bookinfo.yaml
         deployment:
-          id: { concat: [ { get_input: eks_cluster_name }, "-nginx" ] }
+          id: { concat: [ { get_input: eks_cluster_name }, "-bookinfo" ] }
           inputs:
-            argocd_endpoint: { get_attribute: [ argocd, capabilities, argocd_endpoint ] }
-            argocd_password: { get_attribute: [ argocd, capabilities, argocd_password ] }
             kubernetes_endpoint: { get_attribute: [ eks_cluster, capabilities, endpoint ] }
     relationships:
       - target: eks_cluster
         type: cloudify.relationships.contained_in
-      - target: argocd
+      - target: istio
         type: cloudify.relationships.depends_on
 
 outputs:
 
-  argocd_url:
-    description: URL used for accessing ArgoCD installation
-    value: { concat: [ "https://", { get_attribute: [ argocd, capabilities, argocd_endpoint ] } ] }
-  argocd_user:
-    description: Username for accessing ArgoCD
-    value: { get_attribute: [ argocd, capabilities, argocd_user ] }
-  agrocd_passsword:
-    description: Password for accessing ArgoCD
-    value: { get_attribute: [ argocd, capabilities, argocd_password ] }
-  nginx_url:
-    description: Load balancer endpoint for NGINX deployment
-    value: { get_attribute: [ nginx, capabilities, nginx_url ] }
-  argocd_application_url:
-    description: URL of application in ArgoCD
-    value: { get_attribute: [ nginx, capabilities, argocd_application_url ] }
+  istio_ingress_url:
+    description: URL used for accessing Istio ingress gateway
+    value: { concat: [ "http://", { get_attribute: [ istio, capabilities, istio_ingress_endpoint ] } ] }
+
+  bookinfo_url:
+    description: URL used for accessing Bookinfo app
+    value: { concat: [ "http://", { get_attribute: [ istio, capabilities, istio_ingress_endpoint ] }, '/productpage' ] }

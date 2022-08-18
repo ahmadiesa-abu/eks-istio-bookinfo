@@ -1,0 +1,102 @@
+tosca_definitions_version: cloudify_dsl_1_3
+
+description: Deploys bookinfo
+
+imports:
+  - https://cloudify.co/spec/cloudify/6.3.0/types.yaml
+  - plugin:cloudify-helm-plugin
+  - plugin:cloudify-kubernetes-plugin
+  - plugin:cloudify-utilities-plugin
+
+inputs:
+
+  kubernetes_token:
+    description: Kubernetes service account token used by Helm
+    display_label: Kubernetes SA Token
+    type: string
+    default: { get_secret: kubernetes_token }
+
+  kubernetes_endpoint:
+    description: Kubernetes API endpoint
+    display_label: Kubernetes Endpoint
+    type: string
+
+  istio_ingress_namespace:
+    description: Istio Ingress Namespace that has inject label enabled
+    display_label: Istio Ingress Namespace
+    type: string
+    default: istio-ingress
+
+  resource_path:
+    type: string
+    default: manifests/bookinfo.yaml
+
+  gateway_resource_path:
+    type: string
+    default: manifests/bookinfo-gateway.yaml
+
+node_templates:
+
+  istio_ingress_namespace:
+    type: cloudify.kubernetes.resources.Namespace
+    properties:
+      client_config:
+        configuration: &kubernetes_master_configuration
+          api_options:
+            host: { get_input: kubernetes_endpoint }
+            api_key: { get_input: kubernetes_token }
+            verify_ssl: false
+      use_external_resource: true
+      definition:
+        apiVersion: v1
+        kind: Namespace
+        metadata:
+          name: { get_input: istio_ingress_namespace }
+          labels:
+            istio-injection: enabled
+
+  bookinfo_service:
+    type: cloudify.kubernetes.resources.FileDefinedResource
+    properties:
+      client_config:
+        configuration:
+          api_options:
+            host: { get_input: kubernetes_endpoint }
+            api_key: { get_input: kubernetes_token }
+            verify_ssl: false
+      options:
+        namespace: { get_input: istio_ingress_namespace }
+      allow_node_redefinition: true
+      file:
+        resource_path: { get_input: resource_path }
+        template_variables: {}
+    relationships:
+      - target: istio_ingress_namespace
+        type: cloudify.relationships.contained_in
+
+
+  bookinfo_gateway:
+    type: cloudify.nodes.Root
+    relationships:
+      - target: bookinfo_service
+        type: cloudify.relationships.depends_on
+    interfaces:
+      cloudify.interfaces.lifecycle:
+        create:
+          implementation: scripts/setup_kubectl.sh
+          executor: central_deployment_agent
+        configure:
+          implementation: scripts/kubectl_apply.sh
+          executor: central_deployment_agent
+          inputs: &kubectl_inputs
+            host: { get_input: kubernetes_endpoint }
+            token: { get_input: kubernetes_token }
+            gateway_resource_path: { get_input: gateway_resource_path }
+            istio_ingress_namespace: { get_input: istio_ingress_namespace }
+        stop:
+          implementation: scripts/kubectl_delete.sh
+          executor: central_deployment_agent
+          inputs: *kubectl_inputs
+        delete:
+          implementation: scripts/remove_kubectl.sh
+          executor: central_deployment_agent
